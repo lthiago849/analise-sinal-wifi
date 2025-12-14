@@ -2,10 +2,15 @@ import csv
 import time
 import datetime
 import subprocess
-import re # Necessário para analisar a saída do comando
+import re 
 
 # Nome do arquivo onde os dados serão salvos
 NOME_ARQUIVO = 'dados_wifi_coleta.csv'
+
+# Valor assumido para o Ruído de Fundo (Noise Floor) em dBm,
+# usado se o iwconfig não retornar o valor diretamente.
+# Um valor comum para ambientes internos é -95 dBm.
+NOISE_FLOOR_ASSUMIDO = -95 
 
 # Cabeçalhos do arquivo CSV
 CAMPOS = [
@@ -19,14 +24,47 @@ def inicializar_csv():
         writer = csv.writer(file)
         writer.writerow(CAMPOS)
 
+def mapear_frequencia_para_canal(frequencia_ghz):
+    """
+    Mapeia a frequência do Wi-Fi (GHz) para o número do canal.
+    Simplificado para os canais centrais comuns de 2.4 GHz e algumas faixas de 5 GHz.
+    """
+    if frequencia_ghz is None:
+        return None
+        
+    freq = round(frequencia_ghz, 3) # Arredonda para 3 casas decimais
+
+    # Canais de 2.4 GHz
+    if 2.400 < freq < 2.500:
+        # Frequências centrais dos canais de 2.4 GHz
+        freq_canais_2_4 = {
+            2.412: 1, 2.417: 2, 2.422: 3, 2.427: 4, 
+            2.432: 5, 2.437: 6, 2.442: 7, 2.447: 8,
+            2.452: 9, 2.457: 10, 2.462: 11, 2.467: 12, 
+            2.472: 13, 2.484: 14 
+        }
+        # Encontra o canal com a frequência mais próxima
+        closest_freq = min(freq_canais_2_4.keys(), 
+                           key=lambda x: abs(x - freq))
+        
+        if abs(closest_freq - freq) < 0.005:
+            return freq_canais_2_4[closest_freq]
+
+    # Canais de 5 GHz (mapeamento simplificado)
+    elif 5.100 < freq < 5.900:
+        if 5.175 < freq < 5.250: return 36
+        if 5.250 < freq < 5.350: return 52
+        if 5.470 < freq < 5.725: return 100
+        if 5.725 < freq < 5.850: return 149
+        
+    return None
+
 def coletar_dados_sistema(interface='wlan0'):
     """
-    Função REAL para Linux: Executa iwconfig e extrai as métricas de RF.
-    Calcula o SNR (Signal-to-Noise Ratio) como RSSI - Ruído.
+    Executa iwconfig e extrai as métricas de RF.
+    Se o Ruído não for encontrado, usa um valor fixo (NOISE_FLOOR_ASSUMIDO).
     """
     try:
-        # 1. Executa o comando iwconfig
-        # Captura a saída de texto do comando
         output = subprocess.check_output(["iwconfig", interface], stderr=subprocess.STDOUT).decode("utf-8")
         
     except subprocess.CalledProcessError as e:
@@ -37,48 +75,38 @@ def coletar_dados_sistema(interface='wlan0'):
         print("Erro: O comando 'iwconfig' não foi encontrado. Instale o pacote 'wireless-tools'.")
         return None
     
-    # Dicionário para armazenar os dados coletados
     dados_rf = {}
 
-    # 2. Extração de RSSI (Signal Level) e Ruído (Noise Level)
-    # Padrão: 'Signal level=-65 dBm' ou 'Noise level=-95 dBm'
+    # 1. Extração de RSSI (Signal Level)
     rssi_match = re.search(r'Signal level\s*=\s*(\-?\d+)\s*dBm', output)
+    # 2. Extração de Ruído (Tenta o padrão comum)
     noise_match = re.search(r'Noise level\s*=\s*(\-?\d+)\s*dBm', output)
     
-    # 3. Extração de Frequência
-    # Padrão: 'Frequency:2.437 GHz' (ou 5.x GHz)
-    freq_match = re.search(r'Frequency:([\d\.]+) GHz', output)
-    
-    # 4. Extração de BSSID
-    # Padrão: 'Access Point: 00:1A:2B:3C:4D:5E'
-    bssid_match = re.search(r'Access Point:\s*([0-9A-Fa-f:]{17})', output)
-    
-    # 5. Processamento e Cálculo
-    
-    # RSSI
+    # Processamento de RSSI
     dados_rf['rssi_dbm'] = int(rssi_match.group(1)) if rssi_match else None
     
-    # Ruído
-    dados_rf['ruido'] = int(noise_match.group(1)) if noise_match else None
+    # Processamento de Ruído
+    if noise_match:
+        dados_rf['ruido'] = int(noise_match.group(1))
+    else:
+        # SE NÃO ENCONTRAR O RUÍDO, USA O VALOR ASSUMIDO E AVISA
+        dados_rf['ruido'] = NOISE_FLOOR_ASSUMIDO
+        print(f"Aviso: Ruído não detectado pelo iwconfig. Usando valor assumido: {NOISE_FLOOR_ASSUMIDO} dBm.")
 
-    # SNR (Cálculo: RSSI - Ruído). Atenção: Ruído é um número negativo.
+
+    # SNR (Cálculo: RSSI - Ruído). O Ruído é sempre um número negativo.
     if dados_rf['rssi_dbm'] is not None and dados_rf['ruido'] is not None:
         dados_rf['snr'] = dados_rf['rssi_dbm'] - dados_rf['ruido']
     else:
         dados_rf['snr'] = None
 
-    # Frequência (em GHz)
-    dados_rf['frequencia_ghz'] = float(freq_match.group(1)) if freq_match else None
-    
-    # BSSID
-    dados_rf['bssid'] = bssid_match.group(1) if bssid_match else None
+    # Extração de Frequência, Canal e BSSID
+    freq_match = re.search(r'Frequency:([\d\.]+) GHz', output)
+    bssid_match = re.search(r'Access Point:\s*([0-9A-Fa-f:]{17})', output)
 
-    # Canal (Precisa ser calculado a partir da Frequência)
-    # Isso é uma aproximação e pode ser complexo. Por simplicidade,
-    # se a frequência for 2.4 GHz, consideramos o canal 6 (o mais comum se não for especificado)
-    # ou deixar como None se for muito difícil de extrair de forma robusta no iwconfig.
-    # Se você quiser preencher, você teria que criar uma função de mapeamento de frequência para canal.
-    dados_rf['canal'] = None # Deixamos como None, ou use um valor fixo para a rede de teste
+    dados_rf['frequencia_ghz'] = float(freq_match.group(1)) if freq_match else None
+    dados_rf['canal'] = mapear_frequencia_para_canal(dados_rf['frequencia_ghz'])
+    dados_rf['bssid'] = bssid_match.group(1) if bssid_match else None
     
     return dados_rf
 
@@ -88,7 +116,8 @@ def salvar_dados(x, y, dados_rf):
         print("Coleta de dados RF falhou. Linha ignorada.")
         return
         
-    timestamp = datetime.datetime.utcnow().isoformat()
+    # datetime.datetime.utcnow() está obsoleto, usando timezone-aware
+    timestamp = datetime.datetime.now(datetime.UTC).isoformat()
     linha = [
         timestamp,
         x,
@@ -103,24 +132,29 @@ def salvar_dados(x, y, dados_rf):
     with open(NOME_ARQUIVO, mode='a', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(linha)
-    print(f"Dados salvos: Posição ({x}, {y}) | RSSI: {dados_rf.get('rssi_dbm')} dBm | SNR: {dados_rf.get('snr')}")
+    print(f"Dados salvos: Posição ({x}, {y}) | RSSI: {dados_rf.get('rssi_dbm')} dBm | SNR: {dados_rf.get('snr')} dB | Ruído: {dados_rf.get('ruido')} dBm | Canal: {dados_rf.get('canal')}")
 
 def executar_coleta():
     """Loop principal para a coleta de dados."""
+    # Se o arquivo já existe, ele será sobrescrito.
+    if not input(f"O arquivo '{NOME_ARQUIVO}' será sobrescrito. Continuar? (s/n): ").lower().startswith('s'):
+        print("Coleta cancelada.")
+        return
+        
     inicializar_csv()
     print("Iniciando a coleta de dados para o Radiomap.")
-    print("Certifique-se de estar conectado à rede Wi-Fi que deseja medir.")
+    print(f"O Ruído de Fundo será assumido como {NOISE_FLOOR_ASSUMIDO} dBm.")
     print("Digite 'sair' para encerrar a coleta.")
+    
+    interface_wifi = input("Digite o nome da sua interface Wi-Fi (ex: wlp0s20f3, wlan0): ")
 
     while True:
-        # Pede a coordenada (X, Y) manualmente
         entrada = input("\nDigite a posição (x, y) em metros (ex: 1.0, 3.5) ou 'sair': ")
 
         if entrada.lower() == 'sair':
             break
 
         try:
-            # Tenta converter a entrada (x, y) em números
             x_str, y_str = entrada.split(',')
             x = float(x_str.strip())
             y = float(y_str.strip())
@@ -128,26 +162,16 @@ def executar_coleta():
             print("Formato inválido. Use 'x, y' (ex: 1.0, 3.5).")
             continue
 
-        # Coleta a medição RF
-        # Chama a função que usa iwconfig para obter dados reais
-
-        # EXECUTE
-        # ip link show
-
-        dados_rf = coletar_dados_sistema(interface='wlp0s20f3')
+        dados_rf = coletar_dados_sistema(interface=interface_wifi)
         
         if dados_rf is not None and dados_rf.get('rssi_dbm') is not None:
-            # Salva no arquivo CSV
             salvar_dados(x, y, dados_rf)
         else:
             print("Não foi possível obter dados válidos. Tente novamente ou verifique a conexão.")
 
-        # Adiciona um pequeno delay. Recomenda-se um delay maior
-        # para dar tempo de você se mover para o próximo ponto de medição.
         time.sleep(3) 
 
     print(f"\nColeta finalizada. Dados salvos em '{NOME_ARQUIVO}'.")
 
 if __name__ == "__main__":
-    # Certifique-se de que sua interface de rede esteja ligada e conectada.
     executar_coleta()

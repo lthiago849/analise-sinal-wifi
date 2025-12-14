@@ -7,60 +7,78 @@ NOME_ARQUIVO = 'dados_wifi_coleta.csv'
 
 def calcular_distancia(df):
     """Calcula a distância euclidiana do ponto (x, y) até a origem (0, 0)."""
-    # Roteador em (0, 0)
     df['distancia'] = np.sqrt(df['x']**2 + df['y']**2)
     return df
 
-def gerar_mapa_calor_rssi(df, titulo):
-    """Gera um Heatmap 2D do RSSI interpolando os pontos coletados."""
+def configurar_plot_base(df):
+    """Retorna os limites da grade e a posição do roteador."""
+    x_min, x_max = df['x'].min() - 1, df['x'].max() + 1
+    y_min, y_max = df['y'].min() - 1, df['y'].max() + 1
+    return x_min, x_max, y_min, y_max
+
+def gerar_mapa_calor_generico(df, coluna_valor, titulo, label_cor, nome_arquivo, cmap_name):
+    """Gera um Heatmap 2D forçando a barra lateral a seguir o mapa."""
     
-    df = df.dropna(subset=['rssi_dbm']).copy()
+    df = df.dropna(subset=[coluna_valor]).copy()
     if df.empty:
-        print("Erro: Não há dados válidos para o RSSI.")
+        print(f"Erro: Não há dados válidos para {coluna_valor}.")
         return
 
     # 1. Preparar dados
     pontos = df[['x', 'y']].values
-    valores = df['rssi_dbm'].values
+    valores = df[coluna_valor].values
+    
+    # Define limites fixos de cor baseados nos dados para sincronizar fundo e pontos
+    v_min, v_max = valores.min(), valores.max()
     
     # 2. Definir a grade e interpolar
-    # Define a margem de visualização
-    x_min, x_max = df['x'].min() - 1, df['x'].max() + 1
-    y_min, y_max = df['y'].min() - 1, df['y'].max() + 1
-    
+    x_min, x_max, y_min, y_max = configurar_plot_base(df)
     grid_x, grid_y = np.mgrid[x_min:x_max:100j, y_min:y_max:100j]
     grid_z = griddata(pontos, valores, (grid_x, grid_y), method='cubic')
     
     # 3. Plotar o Heatmap 
     plt.figure(figsize=(10, 8))
     
-    # cmap='plasma' ou 'viridis' para visualização de intensidade
-    plt.imshow(grid_z.T, extent=(x_min, x_max, y_min, y_max), origin='lower', 
-               cmap='viridis', aspect='auto')
+    # --- CORREÇÃO PRINCIPAL AQUI ---
+    # Guardamos o objeto 'imagem_mapa' que o imshow cria
+    imagem_mapa = plt.imshow(grid_z.T, extent=(x_min, x_max, y_min, y_max), origin='lower', 
+                             cmap=cmap_name, aspect='auto', vmin=v_min, vmax=v_max)
                
-    plt.scatter(df['x'], df['y'], c='red', s=50, edgecolors='k', label='Pontos de Coleta')
-    plt.scatter([0], [0], c='yellow', s=150, marker='*', edgecolors='black', label='Roteador (0,0)')
+    # Plot dos pontos usando os MESMOS limites (vmin/vmax) e o MESMO mapa de cores
+    plt.scatter(df['x'], df['y'], c=valores, cmap=cmap_name, s=60, edgecolors='k', 
+                vmin=v_min, vmax=v_max, label='Pontos de Coleta')
     
-    plt.colorbar(label='RSSI (dBm) - Sinal Forte (menos negativo) / Fraco (mais negativo)')
+    # Plot do Roteador (Amarelo fixo)
+    plt.scatter([0], [0], c='gold', s=200, marker='*', edgecolors='black', label='Roteador (0,0)')
+    
+    # --- AMARRA A BARRA LATERAL AO MAPA ---
+    # Passamos 'imagem_mapa' para garantir que a barra use as cores certas
+    cbar = plt.colorbar(imagem_mapa, label=label_cor)
+    
     plt.title(titulo)
     plt.xlabel('Eixo X (metros)')
     plt.ylabel('Eixo Y (metros)')
     plt.legend()
-    plt.grid(True)
-    plt.savefig('heatmap_rssi.png')
-    plt.show()
+    plt.grid(True, linestyle=':', alpha=0.6)
+    plt.savefig(nome_arquivo)
+    plt.close() # Fecha a figura para não sobrar lixo na memória
+    print(f"Gerado: {nome_arquivo}")
 
 def gerar_grafico_rssi_distancia(df):
-    """Gera o Gráfico RSSI vs Distância para analisar o Path Loss."""
+    """Gera o Gráfico RSSI vs Distância."""
     df = df.dropna(subset=['rssi_dbm', 'distancia']).copy()
     
     plt.figure(figsize=(10, 6))
-    plt.scatter(df['distancia'], df['rssi_dbm'], alpha=0.7)
+    plt.scatter(df['distancia'], df['rssi_dbm'], alpha=0.7, c='blue', edgecolors='k')
     
-    # Opcional: Adicionar uma linha de regressão para tendência
-    # z = np.polyfit(df['distancia'], df['rssi_dbm'], 1)
-    # p = np.poly1d(z)
-    # plt.plot(df['distancia'], p(df['distancia']), "r--", label='Tendência (Path Loss)')
+    try:
+        df_fit = df[df['distancia'] > 0.5].copy() 
+        z = np.polyfit(np.log10(df_fit['distancia']), df_fit['rssi_dbm'], 1)
+        p = np.poly1d(z)
+        dist_range = np.linspace(df_fit['distancia'].min(), df_fit['distancia'].max(), 50)
+        plt.plot(dist_range, p(np.log10(dist_range)), "r--", linewidth=2, label='Tendência (Path Loss)')
+    except Exception:
+        pass
     
     plt.title('Gráfico RSSI vs. Distância (Análise de Path Loss)')
     plt.xlabel('Distância do Roteador (metros)')
@@ -68,54 +86,62 @@ def gerar_grafico_rssi_distancia(df):
     plt.grid(True, linestyle='--')
     plt.legend()
     plt.savefig('rssi_vs_distancia.png')
-    plt.show()
+    plt.close()
+    print("Gerado: rssi_vs_distancia.png")
+
+def calcular_variancia_local(df):
+    """Calcula a variância do RSSI por ponto."""
+    variancia_df = df.groupby(['x', 'y'])['rssi_dbm'].agg(['std']).reset_index()
+    variancia_df = variancia_df.rename(columns={'std': 'variancia_rssi'})
+    variancia_df['variancia_rssi'] = variancia_df['variancia_rssi'].fillna(0)
+    return variancia_df
 
 def main_analise():
-    """Função principal para executar a análise e visualização."""
+    """Função principal."""
     try:
         df = pd.read_csv(NOME_ARQUIVO)
     except FileNotFoundError:
-        print(f"Erro: Arquivo '{NOME_ARQUIVO}' não encontrado. Execute o script de coleta primeiro.")
+        print(f"Erro: Arquivo '{NOME_ARQUIVO}' não encontrado.")
         return
 
-    # Limpeza e cálculo da distância
     df = calcular_distancia(df)
     
     if len(df) < 5:
-         print(f"Aviso: Você coletou apenas {len(df)} pontos. Colete mais dados (pelo menos 10-15) em áreas distintas para um bom mapa de calor.")
+         print(f"Aviso: Poucos dados ({len(df)} pontos).")
          
-    # 1. Geração do Heatmap do RSSI
-    gerar_mapa_calor_rssi(df, 'Mapa de Cobertura Wi-Fi RSSI')
+    print("--- Gerando Visualizações ---")
+    
+    # 1. RSSI: Usa RdYlBu (Vermelho=Fraco, Azul=Forte)
+    gerar_mapa_calor_generico(df, 'rssi_dbm', '1. Mapa de Cobertura Wi-Fi RSSI', 
+                              'RSSI (dBm)', 'heatmap_rssi.png', 'RdYlBu')
 
-    # 2. Geração do Gráfico RSSI vs. Distância
+    # 2. Path Loss
     gerar_grafico_rssi_distancia(df)
 
-    # 3. Preparação dos Dados para a IA (LLM)
-    print("\n--- Dados Estatísticos Chave para Análise da IA (LLM) ---")
+    # 3. Variância: Usa hot (Preto=Estável, Branco/Amarelo=Instável)
+    variancia_df = calcular_variancia_local(df)
+    if not variancia_df['variancia_rssi'].empty and variancia_df['variancia_rssi'].max() > 0:
+        gerar_mapa_calor_generico(variancia_df, 'variancia_rssi', '2. Heatmap da Variância (Fading)', 
+                                  'Desvio Padrão (dB)', 'heatmap_variancia.png', 'hot')
+    else:
+        print("Aviso: Variância não gerada (falta de repetições no mesmo ponto).")
     
-    # Calcular RSSI Médio e Desvio Padrão
+    # 4. Ruído
+    gerar_mapa_calor_generico(df, 'ruido', '3. Mapa de Ruído', 
+                              'Ruído (dBm)', 'heatmap_ruido.png', 'plasma')
+
+    # 5. SNR: Usa RdYlBu (Vermelho=Ruim, Azul=Bom)
+    gerar_mapa_calor_generico(df, 'snr', '4. Qualidade do Sinal (SNR)', 
+                              'SNR (dB)', 'heatmap_snr.png', 'RdYlBu')
+
+    # Estatísticas
     stats_df = df.dropna(subset=['rssi_dbm']).copy()
+    print("\n--- Estatísticas Finais ---")
+    print(f"* RSSI Médio: {stats_df['rssi_dbm'].mean():.2f} dBm")
+    print(f"* Desvio Padrão Geral: {stats_df['rssi_dbm'].std():.2f} dB")
     
-    # Desvio Padrão (Oscilação) para a IA interpretar multipercurso
-    mean_rssi = stats_df['rssi_dbm'].mean()
-    std_rssi = stats_df['rssi_dbm'].std()
-
-    print(f"* RSSI Médio Geral: {mean_rssi:.2f} dBm")
-    print(f"* Desvio Padrão do RSSI: {std_rssi:.2f} dB (Mede a oscilação do sinal, importante para multipercurso)")
-    
-    # Ponto de Pior Sinal (Zona de Sombra)
-    pior_sinal = stats_df.loc[stats_df['rssi_dbm'].idxmin()]
-    
-    print("\n--- Pontos Críticos para a Explicação da IA ---")
-    print("Ponto de Pior Sinal (Zona de Sombra):")
-    print(f"Coordenadas: ({pior_sinal['x']:.1f}, {pior_sinal['y']:.1f})")
-    print(f"RSSI: {pior_sinal['rssi_dbm']} dBm | Distância: {pior_sinal['distancia']:.1f} m")
-
-    print("\nInstruções para a IA:")
-    print("1. Envie o print do Heatmap e do Gráfico RSSI vs Distância ao LLM.")
-    print("2. Peça ao LLM para analisar a relação entre a distância e a queda do sinal (Path Loss).")
-    print("3. Peça ao LLM para explicar por que o Ponto de Pior Sinal tem um RSSI tão baixo, correlacionando com a Camada Física (ex: absorção por paredes, zonas de sombra).")
-
+    pior = stats_df.loc[stats_df['rssi_dbm'].idxmin()]
+    print(f"Pior Sinal: {pior['rssi_dbm']} dBm em ({pior['x']}, {pior['y']})")
 
 if __name__ == "__main__":
     main_analise()
