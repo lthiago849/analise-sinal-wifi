@@ -4,11 +4,8 @@ import datetime
 import subprocess
 import re 
 
-# Nome do arquivo onde os dados serão salvos
 NOME_ARQUIVO = 'dados_wifi_coleta.csv'
 
-# Valor assumido para o Ruído de Fundo (Noise Floor) em dBm,
-# usado se o iwconfig não retornar o valor diretamente.
 # Um valor comum para ambientes internos é -95 dBm.
 NOISE_FLOOR_ASSUMIDO = -95 
 
@@ -19,16 +16,12 @@ CAMPOS = [
 ]
 
 def inicializar_csv():
-    """Cria o arquivo CSV e escreve os cabeçalhos."""
     with open(NOME_ARQUIVO, mode='w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(CAMPOS)
 
 def mapear_frequencia_para_canal(frequencia_ghz):
-    """
-    Mapeia a frequência do Wi-Fi (GHz) para o número do canal.
-    Simplificado para os canais centrais comuns de 2.4 GHz e algumas faixas de 5 GHz.
-    """
+
     if frequencia_ghz is None:
         return None
         
@@ -60,10 +53,7 @@ def mapear_frequencia_para_canal(frequencia_ghz):
     return None
 
 def coletar_dados_sistema(interface='wlan0'):
-    """
-    Executa iwconfig e extrai as métricas de RF.
-    Se o Ruído não for encontrado, usa um valor fixo (NOISE_FLOOR_ASSUMIDO).
-    """
+
     try:
         output = subprocess.check_output(["iwconfig", interface], stderr=subprocess.STDOUT).decode("utf-8")
         
@@ -115,9 +105,8 @@ def salvar_dados(x, y, dados_rf):
     if dados_rf is None:
         print("Coleta de dados RF falhou. Linha ignorada.")
         return
-        
-    # datetime.datetime.utcnow() está obsoleto, usando timezone-aware
-    timestamp = datetime.datetime.now(datetime.UTC).isoformat()
+
+    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
     linha = [
         timestamp,
         x,

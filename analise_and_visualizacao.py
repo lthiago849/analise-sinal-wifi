@@ -39,7 +39,6 @@ def gerar_mapa_calor_generico(df, coluna_valor, titulo, label_cor, nome_arquivo,
     # 3. Plotar o Heatmap 
     plt.figure(figsize=(10, 8))
     
-    # --- CORREÇÃO PRINCIPAL AQUI ---
     # Guardamos o objeto 'imagem_mapa' que o imshow cria
     imagem_mapa = plt.imshow(grid_z.T, extent=(x_min, x_max, y_min, y_max), origin='lower', 
                              cmap=cmap_name, aspect='auto', vmin=v_min, vmax=v_max)
